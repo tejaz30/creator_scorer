@@ -18,12 +18,14 @@ DEVICE = "cuda" if USE_GPU else "cpu"
 # Directory settings
 REEL_DOWNLOAD_DIR = "_reel_cache"
 APIFY_CACHE_DIR = "apify_metadata_cache"
+COMMENTS_CACHE_DIR = "cache_comments"
 
 # Processing limits
 MAX_REELS_PER_CREATOR = 10
 FRAME_SAMPLE_COUNT = 16
 MAX_DOWNLOAD_WORKERS = 10
 MAX_FRAMES_PER_REEL = 16
+MAX_POSTS_FOR_MARKETING_ANALYSIS = 10
 
 # Gemini model
 GEMINI_MODEL = "models/gemini-2.0-flash-001"

@@ -36,6 +36,7 @@ _reel_cache/
 # Apify metadata cache
 apify_metadata_cache/
 cache_apify/
+cache_comments/
 *.parquet
 
 # Output files

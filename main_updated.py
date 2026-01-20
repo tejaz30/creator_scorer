@@ -15,6 +15,7 @@ import whisper
 import pandas as pd
 import numpy as np
 import yt_dlp
+import hashlib
 from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,9 +28,11 @@ from mine_redis import get_files_gem
 
 from features.creativity import creativity_analyzer
 from features.gemini_analysis import gemini_analyzer
+from features.marketing_tendency import analyze_creator_marketing_tendency
 from config import (
     GEMINI_API_KEY, APIFY_API_KEY, REEL_DOWNLOAD_DIR, APIFY_CACHE_DIR, DEVICE,
-    MAX_REELS_PER_CREATOR, FRAME_SAMPLE_COUNT, MAX_DOWNLOAD_WORKERS
+    MAX_REELS_PER_CREATOR, FRAME_SAMPLE_COUNT, MAX_DOWNLOAD_WORKERS, MAX_POSTS_FOR_MARKETING_ANALYSIS,
+    COMMENTS_CACHE_DIR
 )
 
 # --- CONFIGURATION ---
@@ -51,6 +54,7 @@ CHECKPOINT_PROGRESS = CHECKPOINT_DIR / "progress.txt"
 
 os.makedirs(REEL_DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(APIFY_CACHE_DIR, exist_ok=True)
+os.makedirs(COMMENTS_CACHE_DIR, exist_ok=True)
 
 # Performance monitoring
 class PerformanceMonitor:
@@ -811,7 +815,22 @@ def compute_attractiveness_for_reel(video_path: str) -> dict:
         }
 
 def fetch_deep_comments_apify(reel_url: str, max_comments: int = 150) -> list:
-    """Fetch deep comments for a reel using Apify."""
+    """Fetch deep comments for a reel using Apify with caching."""
+    
+    # Create cache key from URL
+    url_hash = hashlib.md5(reel_url.encode()).hexdigest()
+    cache_file = Path(COMMENTS_CACHE_DIR) / f"{url_hash}_max{max_comments}.json"
+    
+    # Check cache first
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cached_comments = json.load(f)
+            print(f"    💾 Using cached comments: {len(cached_comments)} comments")
+            return cached_comments
+        except Exception as e:
+            print(f"    ⚠️ Cache read failed: {e}, fetching fresh...")
+    
     print(f"    💬 Fetching deep comments (max {max_comments})...")
     
     try:
@@ -829,6 +848,14 @@ def fetch_deep_comments_apify(reel_url: str, max_comments: int = 150) -> list:
                 text = item.get("text", "").strip()
                 if text:
                     comments.append(text)
+        
+        # Cache the results
+        try:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(comments, f, ensure_ascii=False, indent=2)
+            print(f"    💾 Cached {len(comments)} comments to {cache_file}")
+        except Exception as e:
+            print(f"    ⚠️ Cache write failed: {e}")
         
         print(f"    ✓ Deep comments fetched: {len(comments)}")
         return comments
@@ -952,6 +979,8 @@ def call_gemini_for_reel(caption: str, transcript: str, comments: list) -> str:
     except Exception as e:
         print(f"    ✗ Gemini analysis failed: {e}")
         return "{}"
+
+
 
 # =============================================================================
 # MAIN PROCESSING LOOP
@@ -1109,7 +1138,21 @@ def process_creator_with_checkpoints(creator: str, all_rows: list, sun_frame_row
     
     print(f"\n✅ Completed @{creator}: {creator_reels_processed} reels processed")
     
-    # 4) AGGREGATE RESULTS (like your example)
+    # 4) ANALYZE MARKETING TENDENCY ACROSS ALL POSTS
+    print(f"\n📊 Analyzing overall marketing tendency for @{creator}...")
+    marketing_analysis = analyze_creator_marketing_tendency(
+        creator, 
+        gemini_client=gemini_client, 
+        apify_client=apify_client, 
+        max_posts=MAX_POSTS_FOR_MARKETING_ANALYSIS
+    )
+    
+    # 5) COMPUTE OUTLIER RATIO FOR THIS CREATOR
+    from features.creativity import compute_outlier_2sigma_ratio
+    word_counts = [row.get('word_count', 0) for row in reel_results]
+    outlier_ratio = compute_outlier_2sigma_ratio(word_counts) if word_counts else 0.0
+    
+    # 6) AGGREGATE RESULTS (like your example)
     if not reel_results:
         return None
     
@@ -1117,7 +1160,7 @@ def process_creator_with_checkpoints(creator: str, all_rows: list, sun_frame_row
     nm = df[~df['is_music_only']]  # Non-music reels
     
     # Return aggregated result (like your example script)
-    return {
+    result = {
         "creator": creator,
         "eye_contact_avg_score_0_10": df.get('eye_contact_score_0_10', pd.Series([0])).mean(),
         "series_reel_mean": df['series_flag'].mean(),
@@ -1150,6 +1193,14 @@ def process_creator_with_checkpoints(creator: str, all_rows: list, sun_frame_row
         "avg_attractiveness": df.get("composite_aesthetic_score", pd.Series([0])).mean(),
         "avg_total_accessories": df.get("total_accessories", pd.Series([0])).mean(),
     }
+    
+    # Add marketing tendency analysis to the result
+    result.update(marketing_analysis)
+    
+    # Add outlier ratio
+    result['outlier_2sigma_ratio'] = outlier_ratio
+    
+    return result
 
 # =============================================================================
 # MAIN EXECUTION
