@@ -39,6 +39,14 @@ STORYTELLING_FEATURES = [
     'outlier_2sigma_ratio'
 ]
 
+COMMUNICATION_FEATURES = [
+    'eye_contact_avg_score_0_10',
+    'avg_captioned_reels',
+    'gemini_is_marketing',
+    'gemini_has_humour',
+    'mean_face_density'
+]
+
 # XGBoost parameters
 XGBOOST_PARAMS = {
     'n_estimators': 100,
@@ -66,3 +74,7 @@ MAX_CREDIBILITY_SCORE = 10
 # Storytelling score range
 MIN_STORYTELLING_SCORE = 1
 MAX_STORYTELLING_SCORE = 10
+
+# Communication score range
+MIN_COMMUNICATION_SCORE = 1
+MAX_COMMUNICATION_SCORE = 10

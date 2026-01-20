@@ -39,7 +39,7 @@ from config import (
 load_dotenv()
 
 # Paths
-INPUT_CSV = "new_creators.csv"
+INPUT_CSV = "training_set.csv"
 OUTPUT_CSV = "final_creator_scores.csv"
 
 # Updated paths to match new structure
@@ -814,7 +814,76 @@ def compute_attractiveness_for_reel(video_path: str) -> dict:
             "bg_samples_count": 0,
         }
 
-def fetch_deep_comments_apify(reel_url: str, max_comments: int = 150) -> list:
+def fetch_deep_comments_apify_batch(reel_urls: list, max_comments_per_url: int = 150) -> dict:
+    """
+    Batch comment fetch: ONE actor run for MANY reel/post URLs.
+    Returns: {canonical_post_url: [comment_texts...]}
+    """
+    from collections import defaultdict
+    
+    # Normalize and dedupe URLs
+    normalized_urls = []
+    for url in reel_urls:
+        if isinstance(url, str) and url.strip():
+            # Simple normalization - remove query params and fragments
+            clean_url = url.split('?')[0].split('#')[0].rstrip('/')
+            if clean_url not in normalized_urls:
+                normalized_urls.append(clean_url)
+    
+    if not normalized_urls:
+        return {}
+    
+    print(f"    💬 Batch deep comments: {len(normalized_urls)} URLs, limit={max_comments_per_url}")
+    
+    try:
+        run_input = {
+            "directUrls": normalized_urls,
+            "resultsLimit": int(max_comments_per_url),
+            "proxyConfiguration": {"useApifyProxy": True},
+        }
+        
+        # Start the actor
+        run = apify_client.actor("apify/instagram-comment-scraper").start(run_input=run_input)
+        run_id = run["id"]
+        
+        # Wait for completion
+        finished = apify_client.run(run_id).wait_for_finish()
+        dataset_id = finished["defaultDatasetId"]
+        
+        # Download all items
+        items = apify_client.dataset(dataset_id).list_items().items
+        
+        # Group comments by post URL
+        by_url = defaultdict(list)
+        
+        for item in items:
+            # Try different possible URL field names
+            post_url = (
+                item.get("postUrl") or 
+                item.get("postURL") or 
+                item.get("url") or 
+                item.get("postLink") or 
+                ""
+            )
+            
+            # Normalize the URL from the response
+            if post_url:
+                clean_post_url = post_url.split('?')[0].split('#')[0].rstrip('/')
+                
+                # Get comment text
+                comment_text = item.get("text") or item.get("body") or ""
+                
+                if clean_post_url and isinstance(comment_text, str) and comment_text.strip():
+                    by_url[clean_post_url].append(comment_text.strip())
+        
+        print(f"    ✓ Batch comments fetched: {len(by_url)} URLs with comments")
+        return dict(by_url)
+        
+    except Exception as e:
+        print(f"    ✗ Batch comments fetch failed: {e}")
+        return {}
+
+def fetch_deep_comments_apify(reel_url: str, max_comments: int = 150, batch_cache: dict = None) -> list:
     """Fetch deep comments for a reel using Apify with caching."""
     
     # Create cache key from URL
@@ -831,7 +900,24 @@ def fetch_deep_comments_apify(reel_url: str, max_comments: int = 150) -> list:
         except Exception as e:
             print(f"    ⚠️ Cache read failed: {e}, fetching fresh...")
     
-    print(f"    💬 Fetching deep comments (max {max_comments})...")
+    # Check batch cache if provided
+    if batch_cache:
+        clean_url = reel_url.split('?')[0].split('#')[0].rstrip('/')
+        if clean_url in batch_cache:
+            comments = batch_cache[clean_url]
+            print(f"    🎯 Using batch cached comments: {len(comments)} comments")
+            
+            # Cache the results for future use
+            try:
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(comments, f, ensure_ascii=False, indent=2)
+                print(f"    💾 Cached {len(comments)} comments to {cache_file}")
+            except Exception as e:
+                print(f"    ⚠️ Cache write failed: {e}")
+            
+            return comments
+    
+    print(f"    💬 Fetching deep comments individually (max {max_comments})...")
     
     try:
         run_input = {
@@ -1033,6 +1119,17 @@ def process_creator_with_checkpoints(creator: str, all_rows: list, sun_frame_row
     
     print(f"✅ Download phase complete: {sum(1 for p in download_results.values() if p)} successful")
     
+    # 2.5) BATCH FETCH DEEP COMMENTS FOR ALL REELS
+    print(f"💬 Batch fetching deep comments for all {len(df_batch)} reels...")
+    reel_urls_for_comments = []
+    for reel_idx, row in df_batch.iterrows():
+        reel_url = row["reel_url"]
+        reel_urls_for_comments.append(reel_url)
+    
+    # Fetch comments in batch (one Apify actor call for all reels)
+    batch_comments_cache = fetch_deep_comments_apify_batch(reel_urls_for_comments, max_comments_per_url=150)
+    print(f"✅ Batch comments complete: {len(batch_comments_cache)} URLs with comments")
+    
     # 3) METRIC LOOP
     creator_reels_processed = 0
     creator_frame_data = []
@@ -1051,7 +1148,7 @@ def process_creator_with_checkpoints(creator: str, all_rows: list, sun_frame_row
         
         try:
             # Extract all features
-            raw_comments = fetch_deep_comments_apify(reel_url, max_comments=150)
+            raw_comments = fetch_deep_comments_apify(reel_url, max_comments=150, batch_cache=batch_comments_cache)
             transcript = transcribe_reel(video_path, reel_url=reel_url)
             
             is_music = is_music_only_transcript(transcript)

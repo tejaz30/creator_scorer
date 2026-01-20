@@ -337,6 +337,8 @@ site/
 # Keep model README but not actual models
 !models/README.md
 
+*.md
+training_set.csv
 # Keep example files
 !examples/
 !examples/*.py
