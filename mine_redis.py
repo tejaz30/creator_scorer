@@ -270,6 +270,18 @@ def download_reel(video_url: str, REEL_NO: str, task_id: str):
         reels_dir = os.path.join("reels", task_id)
         os.makedirs(reels_dir, exist_ok=True)
         path = os.path.join(reels_dir, REEL_NO + '.mp4')
+        
+        # Check if file already exists and is valid
+        if os.path.exists(path):
+            # Quick validation - check file size
+            file_size = os.path.getsize(path)
+            if file_size > 1024:  # More than 1KB
+                print(f"Reel {REEL_NO} already exists: {path}")
+                return path
+            else:
+                print(f"Existing file too small ({file_size} bytes), re-downloading...")
+                os.remove(path)
+        
         print(f"Downloading reel {REEL_NO} from: {video_url}")
         headers = {"Range": f"bytes=0-{max_bytes - 1}"}
 

@@ -40,7 +40,7 @@ load_dotenv()
 
 # Paths
 INPUT_CSV = "training_set.csv"
-OUTPUT_CSV = "final_creator_scores.csv"
+OUTPUT_CSV = "final_creator_scores1.csv"
 
 # Updated paths to match new structure
 REEL_DOWNLOAD_DIR = "./_reel_cache"
@@ -79,6 +79,38 @@ class PerformanceMonitor:
         print(f"   Speed: {successful_downloads / batch_time:.1f} downloads/sec")
 
 perf_monitor = PerformanceMonitor()
+
+def cleanup_corrupted_videos(directory: str = REEL_DOWNLOAD_DIR) -> int:
+    """Clean up corrupted video files from the download directory."""
+    if not os.path.exists(directory):
+        return 0
+    
+    corrupted_count = 0
+    total_size_freed = 0
+    
+    print(f"🧹 Scanning for corrupted videos in {directory}...")
+    
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.lower().endswith(('.mp4', '.mov', '.avi', '.mkv', '.webm')):
+                file_path = os.path.join(root, file)
+                
+                if not validate_video_file(file_path):
+                    file_size = os.path.getsize(file_path)
+                    try:
+                        os.remove(file_path)
+                        corrupted_count += 1
+                        total_size_freed += file_size
+                        print(f"  🗑️ Removed corrupted: {file_path} ({file_size} bytes)")
+                    except Exception as e:
+                        print(f"  ❌ Failed to remove {file_path}: {e}")
+    
+    if corrupted_count > 0:
+        print(f"✅ Cleanup complete: {corrupted_count} corrupted files removed, {total_size_freed/1024/1024:.1f} MB freed")
+    else:
+        print("✅ No corrupted files found")
+    
+    return corrupted_count
 
 # --- GLOBAL MODEL LOADING ---
 # Configuration values imported from config.py
@@ -289,16 +321,58 @@ def fetch_reels_from_apify(handle: str, max_items: int = MAX_REELS_PER_CREATOR) 
 # =============================================================================
 _download_cache = {}
 
+def validate_video_file(video_path: str) -> bool:
+    """Validate that a video file is not corrupted and can be processed."""
+    if not os.path.exists(video_path):
+        return False
+    
+    # Check file size (too small = likely corrupted)
+    file_size = os.path.getsize(video_path)
+    if file_size < 1024:  # Less than 1KB
+        print(f"    ⚠️ Video file too small ({file_size} bytes): {video_path}")
+        return False
+    
+    # Quick OpenCV validation
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"    ⚠️ Cannot open video file: {video_path}")
+            cap.release()
+            return False
+        
+        # Try to read first frame
+        ret, frame = cap.read()
+        cap.release()
+        
+        if not ret or frame is None:
+            print(f"    ⚠️ Cannot read frames from video: {video_path}")
+            return False
+        
+        return True
+        
+    except Exception as e:
+        print(f"    ⚠️ Video validation failed: {e}")
+        return False
+
 def download_reel_cached(reel_url: str, reel_no: int, task_id: str = "joint") -> str | None:
-    """Download reel with caching using get_files_gem"""
+    """Download reel with caching and validation using get_files_gem"""
+    
+    # First check in-memory cache
     if reel_url in _download_cache:
         cached_path = _download_cache[reel_url]
         print(f"    💾 Using cached download: {cached_path}")
-        if os.path.exists(cached_path):
+        if os.path.exists(cached_path) and validate_video_file(cached_path):
             return cached_path
         else:
-            print(f"    ❌ Cached file missing: {cached_path}")
+            print(f"    ❌ Cached file missing or corrupted: {cached_path}")
             del _download_cache[reel_url]
+    
+    # Check if file already exists on disk (from previous runs)
+    expected_path = os.path.join("reels", task_id, f"{reel_no}.mp4")
+    if os.path.exists(expected_path) and validate_video_file(expected_path):
+        print(f"    💾 Using existing file: {expected_path}")
+        _download_cache[reel_url] = expected_path
+        return expected_path
 
     print(f"    🔽 Downloading: {reel_url}")
     try:
@@ -325,6 +399,18 @@ def download_reel_cached(reel_url: str, reel_no: int, task_id: str = "joint") ->
             return None
 
         local_path = os.path.abspath(path)
+        
+        # Validate the downloaded video file
+        if not validate_video_file(local_path):
+            print(f"    ❌ Downloaded video is corrupted: {local_path}")
+            # Try to remove corrupted file
+            try:
+                os.remove(local_path)
+                print(f"    🗑️ Removed corrupted file: {local_path}")
+            except:
+                pass
+            return None
+        
         print(f"    ✅ Valid download: {local_path}")
         _download_cache[reel_url] = local_path
         return local_path
@@ -472,6 +558,11 @@ def transcribe_reel(video_path: str, reel_url: str | None = None) -> str:
         print(f"    ❌ File does not exist: {video_path}")
         return ""
     
+    # Early validation to avoid corrupted file processing
+    if not validate_video_file(video_path):
+        print(f"    ❌ Video file is corrupted, skipping transcription")
+        return ""
+    
     file_size = os.path.getsize(video_path)
     print(f"    📁 File exists, size: {file_size} bytes")
     
@@ -571,7 +662,7 @@ def detect_series_from_text(caption: str, transcript: str, comments=None) -> dic
 
 def compute_sun_exposure_for_reel(video_path: str) -> dict:
     """Compute sun exposure metrics for a reel."""
-    if not os.path.exists(video_path):
+    if not os.path.exists(video_path) or not validate_video_file(video_path):
         return {
             "sun_exposure_raw_A": 0.0,
             "sun_exposure_0_10_A": 0.0,
@@ -587,43 +678,53 @@ def compute_sun_exposure_for_reel(video_path: str) -> dict:
             "sun_frame_scores": []
         }
     
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total_frames == 0:
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames == 0:
+            cap.release()
+            return {
+                "sun_exposure_raw_A": 0.0,
+                "sun_exposure_0_10_A": 0.0,
+                "sun_frame_scores": []
+            }
+        
+        # Sample frames uniformly
+        sample_count = min(FRAME_SAMPLE_COUNT, total_frames)
+        indices = np.linspace(0, total_frames - 1, sample_count, dtype=int)
+        
+        frame_scores = []
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                # Simple sun exposure calculation based on brightness
+                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                brightness = hsv[:, :, 2].mean()
+                sun_score = min(brightness / 255.0 * 10.0, 10.0)
+                frame_scores.append(sun_score)
+        
         cap.release()
+        
+        avg_score = np.mean(frame_scores) if frame_scores else 0.0
+        
+        return {
+            "sun_exposure_raw_A": float(avg_score),
+            "sun_exposure_0_10_A": float(min(avg_score, 10.0)),
+            "sun_frame_scores": frame_scores
+        }
+        
+    except Exception as e:
+        cap.release()
+        print(f"    ⚠️ Sun exposure computation failed: {e}")
         return {
             "sun_exposure_raw_A": 0.0,
             "sun_exposure_0_10_A": 0.0,
             "sun_frame_scores": []
         }
-    
-    # Sample frames uniformly
-    sample_count = min(FRAME_SAMPLE_COUNT, total_frames)
-    indices = np.linspace(0, total_frames - 1, sample_count, dtype=int)
-    
-    frame_scores = []
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = cap.read()
-        if ret:
-            # Simple sun exposure calculation based on brightness
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            brightness = hsv[:, :, 2].mean()
-            sun_score = min(brightness / 255.0 * 10.0, 10.0)
-            frame_scores.append(sun_score)
-    
-    cap.release()
-    
-    avg_score = np.mean(frame_scores) if frame_scores else 0.0
-    
-    return {
-        "sun_exposure_raw_A": float(avg_score),
-        "sun_exposure_0_10_A": float(min(avg_score, 10.0)),
-        "sun_frame_scores": frame_scores
-    }
 
 def compute_eye_contact_for_reel(video_path: str) -> dict:
     """Compute eye contact metrics for a reel."""
-    if not os.path.exists(video_path):
+    if not os.path.exists(video_path) or not validate_video_file(video_path):
         return {
             "eye_contact_ratio": 0.0,
             "eye_contact_score_0_10": 0.0
@@ -636,35 +737,44 @@ def compute_eye_contact_for_reel(video_path: str) -> dict:
             "eye_contact_score_0_10": 0.0
         }
     
-    total_frames = 0
-    eye_contact_frames = 0
-    
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        total_frames = 0
+        eye_contact_frames = 0
         
-        total_frames += 1
-        if total_frames % 3 != 0:  # Sample every 3rd frame
-            continue
+        while True:
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                break
+            
+            total_frames += 1
+            if total_frames % 3 != 0:  # Sample every 3rd frame
+                continue
+            
+            # Simple eye contact detection using face cascade
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.2, 5, minSize=(60, 60))
+            
+            if len(faces) > 0:
+                # If face detected, assume eye contact for simplicity
+                eye_contact_frames += 1
         
-        # Simple eye contact detection using face cascade
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.2, 5, minSize=(60, 60))
+        cap.release()
         
-        if len(faces) > 0:
-            # If face detected, assume eye contact for simplicity
-            eye_contact_frames += 1
-    
-    cap.release()
-    
-    ratio = eye_contact_frames / max(total_frames // 3, 1)
-    score = ratio * 10.0
-    
-    return {
-        "eye_contact_ratio": float(ratio),
-        "eye_contact_score_0_10": float(score)
-    }
+        ratio = eye_contact_frames / max(total_frames // 3, 1)
+        score = ratio * 10.0
+        
+        return {
+            "eye_contact_ratio": float(ratio),
+            "eye_contact_score_0_10": float(score)
+        }
+        
+    except Exception as e:
+        cap.release()
+        print(f"    ⚠️ Eye contact computation failed: {e}")
+        return {
+            "eye_contact_ratio": 0.0,
+            "eye_contact_score_0_10": 0.0
+        }
 
 def compute_video_caption_flag_for_reel(video_path: str) -> dict:
     """Compute video caption detection for a reel."""
@@ -766,53 +876,6 @@ def compute_accessories_for_reel(video_path: str) -> dict:
     accessory_dict["total_accessories"] = sum(accessory_counts.values())
     
     return accessory_dict
-
-def compute_attractiveness_for_reel(video_path: str) -> dict:
-    """Compute attractiveness metrics for a reel using the enhanced composite system."""
-    try:
-        # Import the attractiveness analyzer
-        from features.attractiveness import attractiveness_analyzer
-        
-        # Use the enhanced analyzer which includes composite scoring
-        result = attractiveness_analyzer.compute_attractiveness_for_reel(video_path)
-        
-        # Map to expected output format for backward compatibility
-        return {
-            "attractiveness_score": result.get("multi_cue_attr_0_10", 0.0),
-            "face_area_frac": result.get("face_area_frac", 0.0),
-            "center_offset_norm": result.get("center_offset_norm", 1.0),
-            "lighting_score": result.get("lighting", 0.0),
-            "sharpness_score": result.get("sharpness", 0.0),
-            "aesthetic_face": result.get("aesthetic_face_0_10", 0.0),
-            "aesthetic_full": result.get("aesthetic_full_0_10", 0.0),
-            # New composite metrics
-            "face_aesthetic_score_0_10": result.get("face_aesthetic_score_0_10", 0.0),
-            "bg_clutter_score": result.get("bg_clutter_score", 0.0),
-            "bg_brightness_score": result.get("bg_brightness_score", 0.0),
-            "bg_saturation_score": result.get("bg_saturation_score", 0.0),
-            "composite_aesthetic_score": result.get("composite_aesthetic_score", 0.0),
-            "face_samples_count": result.get("face_samples_count", 0),
-            "bg_samples_count": result.get("bg_samples_count", 0),
-        }
-        
-    except Exception as e:
-        print(f"    ✗ Attractiveness analysis failed: {e}")
-        return {
-            "attractiveness_score": 0.0,
-            "face_area_frac": 0.0,
-            "center_offset_norm": 1.0,
-            "lighting_score": 0.0,
-            "sharpness_score": 0.0,
-            "aesthetic_face": 0.0,
-            "aesthetic_full": 0.0,
-            "face_aesthetic_score_0_10": 0.0,
-            "bg_clutter_score": 0.0,
-            "bg_brightness_score": 0.0,
-            "bg_saturation_score": 0.0,
-            "composite_aesthetic_score": 0.0,
-            "face_samples_count": 0,
-            "bg_samples_count": 0,
-        }
 
 def fetch_deep_comments_apify_batch(reel_urls: list, max_comments_per_url: int = 150) -> dict:
     """
@@ -1146,27 +1209,81 @@ def process_creator_with_checkpoints(creator: str, all_rows: list, sun_frame_row
             print("  ✗ No local video_path for this reel (download failed or missing).")
             continue
         
+        # EARLY VALIDATION: Skip corrupted videos immediately
+        if not validate_video_file(video_path):
+            print(f"  ✗ Skipping corrupted video file: {video_path}")
+            continue
+        
         try:
-            # Extract all features
+            # PERFORMANCE MONITORING: Track feature extraction times
+            feature_start_time = time.time()
+            
+            # Extract all features with PARALLEL PROCESSING OPTIMIZATION
             raw_comments = fetch_deep_comments_apify(reel_url, max_comments=150, batch_cache=batch_comments_cache)
+            
+            # OPTIMIZATION: Parallel processing for independent features
+            # ThreadPoolExecutor already imported at top of file
+            
+            # Sequential features (depend on transcript)
+            transcript_start = time.time()
             transcript = transcribe_reel(video_path, reel_url=reel_url)
+            transcript_time = time.time() - transcript_start
             
             is_music = is_music_only_transcript(transcript)
             word_count = compute_spoken_word_count(transcript)
+            english_pct = english_percentage(transcript)
             
-            sun = compute_sun_exposure_for_reel(video_path)
+            # Parallel processing for independent video analysis features
+            parallel_results = {}
+            parallel_start = time.time()
+            
+            def run_sun_exposure():
+                return compute_sun_exposure_for_reel(video_path)
+            
+            def run_eye_contact():
+                return compute_eye_contact_for_reel(video_path)
+            
+            def run_creativity():
+                return creativity_analyzer.compute_creativity_for_reel(video_path)
+            
+            def run_captions():
+                return compute_video_caption_flag_for_reel(video_path)
+            
+            def run_accessories():
+                return compute_accessories_for_reel(video_path)
+            
+            # Execute independent features in parallel (removed attractiveness)
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_name = {
+                    executor.submit(run_sun_exposure): 'sun',
+                    executor.submit(run_eye_contact): 'eye',
+                    executor.submit(run_creativity): 'creativity',
+                    executor.submit(run_captions): 'captions',
+                    executor.submit(run_accessories): 'accessories'
+                }
+                
+                for future in as_completed(future_to_name):
+                    feature_name = future_to_name[future]
+                    try:
+                        result = future.result()
+                        parallel_results[feature_name] = result
+                    except Exception as e:
+                        print(f"  ⚠️ Parallel feature {feature_name} failed: {e}")
+                        parallel_results[feature_name] = {}
+            
+            parallel_time = time.time() - parallel_start
+            
+            # Extract results from parallel processing
+            sun = parallel_results.get('sun', {})
             frame_scores = sun.pop("sun_frame_scores", [])
             
-            eye = compute_eye_contact_for_reel(video_path)
-            creat = creativity_analyzer.compute_creativity_for_reel(video_path)
+            eye = parallel_results.get('eye', {})
+            creat = parallel_results.get('creativity', {})
+            caps_info = parallel_results.get('captions', {})
+            acc_counts = parallel_results.get('accessories', {})
             
-            # Compute attractiveness metrics
-            attract = compute_attractiveness_for_reel(video_path)
-            
+            # Sequential features that depend on text
             series_info = detect_series_from_text(caption, transcript, raw_comments)
-            caps_info = compute_video_caption_flag_for_reel(video_path)
-            acc_counts = compute_accessories_for_reel(video_path)
-            english_pct = english_percentage(transcript)
             
             filtered_comments_for_gemini = filter_top_comments_for_gemini(
                 raw_comments,
@@ -1174,9 +1291,20 @@ def process_creator_with_checkpoints(creator: str, all_rows: list, sun_frame_row
                 max_after_filter=30,
             )
             
+            gemini_start = time.time()
             gemini_raw = call_gemini_for_reel(caption, transcript, filtered_comments_for_gemini)
             gemini_obj = parse_gemini_raw(gemini_raw)
             gemini_flat = flatten_dict(gemini_obj)
+            gemini_time = time.time() - gemini_start
+            
+            total_feature_time = time.time() - feature_start_time
+            
+            # PERFORMANCE LOGGING
+            print(f"  ⏱️ Feature extraction times:")
+            print(f"     Transcript: {transcript_time:.1f}s")
+            print(f"     Parallel features: {parallel_time:.1f}s")
+            print(f"     Gemini analysis: {gemini_time:.1f}s")
+            print(f"     Total: {total_feature_time:.1f}s")
             
             # Build row output
             row_out = {
@@ -1208,7 +1336,6 @@ def process_creator_with_checkpoints(creator: str, all_rows: list, sun_frame_row
             row_out.update(sun)
             row_out.update(eye)
             row_out.update(creat)
-            row_out.update(attract)
             row_out.update(caps_info)
             row_out.update(acc_counts)
             
@@ -1287,7 +1414,6 @@ def process_creator_with_checkpoints(creator: str, all_rows: list, sun_frame_row
         "avg_english_pct": nm['english_pct'].mean() if not nm.empty else 0,
         "mean_clip_score": df.get("clip_score_0_10", pd.Series([0])).mean(),
         "avg_sun_exposure": df.get("sun_exposure_0_10_A", pd.Series([0])).mean(),
-        "avg_attractiveness": df.get("composite_aesthetic_score", pd.Series([0])).mean(),
         "avg_total_accessories": df.get("total_accessories", pd.Series([0])).mean(),
     }
     
@@ -1303,6 +1429,10 @@ def process_creator_with_checkpoints(creator: str, all_rows: list, sun_frame_row
 # MAIN EXECUTION
 # =============================================================================
 if __name__ == "__main__":
+    # 0. Clean up any corrupted video files first
+    print("🧹 Performing initial cleanup of corrupted video files...")
+    cleanup_corrupted_videos()
+    
     # 1. Validation
     if not os.path.exists(INPUT_CSV):
         print(f"❌ Input file {INPUT_CSV} not found.")

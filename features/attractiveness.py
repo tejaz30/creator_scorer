@@ -16,8 +16,10 @@ from config import FRAME_SAMPLE_COUNT
 
 # Import the new composite attractiveness analyzer
 try:
-    from features.attractiveness_composite import composite_attractiveness_analyzer
-    COMPOSITE_ANALYZER_AVAILABLE = True
+    # DISABLED: Heavy model loading - use lightweight legacy system only
+    # from features.attractiveness_composite import composite_attractiveness_analyzer
+    COMPOSITE_ANALYZER_AVAILABLE = False
+    print("ℹ️ Using lightweight attractiveness analysis (composite models disabled)")
 except ImportError:
     COMPOSITE_ANALYZER_AVAILABLE = False
     print("⚠️ Composite attractiveness analyzer not available, using legacy system")

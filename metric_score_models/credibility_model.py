@@ -12,11 +12,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import shap
 
-from .config import (
+from config import (
     XGBOOST_PARAMS, CV_FOLDS, TEST_SIZE, RANDOM_STATE,
     MIN_CREDIBILITY_SCORE, MAX_CREDIBILITY_SCORE, MODELS_DIR, RESULTS_DIR
 )
-from .preprocessor import CredibilityFeaturePreprocessor
+from credibility_preprocessor import CredibilityFeaturePreprocessor
 
 class CredibilityScorer:
     """XGBoost-based credibility scoring model."""
@@ -82,13 +82,47 @@ class CredibilityScorer:
         test_pred = np.clip(test_pred, MIN_CREDIBILITY_SCORE, MAX_CREDIBILITY_SCORE)
         
         # Calculate metrics
+        from sklearn.metrics import mean_absolute_percentage_error
+        
+        train_rmse = np.sqrt(mean_squared_error(y_train, train_pred))
+        test_rmse = np.sqrt(mean_squared_error(y_test, test_pred))
+        train_mae = mean_absolute_error(y_train, train_pred)
+        test_mae = mean_absolute_error(y_test, test_pred)
+        train_r2 = r2_score(y_train, train_pred)
+        test_r2 = r2_score(y_test, test_pred)
+        
+        # Accuracy-like metrics for regression
+        try:
+            train_mape = mean_absolute_percentage_error(y_train, train_pred) * 100
+            test_mape = mean_absolute_percentage_error(y_test, test_pred) * 100
+        except:
+            train_mape = test_mape = 0
+        
+        # Accuracy within tolerance (±0.5 and ±1.0)
+        train_acc_05 = np.mean(np.abs(y_train - train_pred) <= 0.5) * 100
+        test_acc_05 = np.mean(np.abs(y_test - test_pred) <= 0.5) * 100
+        train_acc_10 = np.mean(np.abs(y_train - train_pred) <= 1.0) * 100
+        test_acc_10 = np.mean(np.abs(y_test - test_pred) <= 1.0) * 100
+        
         self.training_metrics = {
-            'train_rmse': np.sqrt(mean_squared_error(y_train, train_pred)),
-            'test_rmse': np.sqrt(mean_squared_error(y_test, test_pred)),
-            'train_mae': mean_absolute_error(y_train, train_pred),
-            'test_mae': mean_absolute_error(y_test, test_pred),
-            'train_r2': r2_score(y_train, train_pred),
-            'test_r2': r2_score(y_test, test_pred),
+            'train_rmse': train_rmse,
+            'test_rmse': test_rmse,
+            'train_mae': train_mae,
+            'test_mae': test_mae,
+            'train_r2': train_r2,
+            'test_r2': test_r2,
+            'train_mape': train_mape,
+            'test_mape': test_mape,
+            'val_mape': test_mape,  # For compatibility
+            'train_acc_05': train_acc_05,
+            'test_acc_05': test_acc_05,
+            'val_acc_05': test_acc_05,  # For compatibility
+            'train_acc_10': train_acc_10,
+            'test_acc_10': test_acc_10,
+            'val_acc_10': test_acc_10,  # For compatibility
+            'val_mae': test_mae,  # For compatibility
+            'val_rmse': test_rmse,  # For compatibility
+            'val_r2': test_r2,  # For compatibility
             'train_samples': len(y_train),
             'test_samples': len(y_test)
         }

@@ -11,7 +11,7 @@ from scipy import stats
 import joblib
 from pathlib import Path
 
-from .config import CREDIBILITY_FEATURES, MODELS_DIR
+from config import CREDIBILITY_FEATURES, MODELS_DIR
 
 class CredibilityFeaturePreprocessor:
     """Preprocessor for credibility scoring features."""

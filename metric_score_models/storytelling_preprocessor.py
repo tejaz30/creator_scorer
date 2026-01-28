@@ -11,7 +11,7 @@ from scipy import stats
 import joblib
 from pathlib import Path
 
-from .config import STORYTELLING_FEATURES, MODELS_DIR
+from config import STORYTELLING_FEATURES, MODELS_DIR
 
 class StorytellingFeaturePreprocessor:
     """Preprocessor for storytelling scoring features."""

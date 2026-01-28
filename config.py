@@ -20,18 +20,19 @@ REEL_DOWNLOAD_DIR = "_reel_cache"
 APIFY_CACHE_DIR = "apify_metadata_cache"
 COMMENTS_CACHE_DIR = "cache_comments"
 
-# Processing limits
+# Processing limits (OPTIMIZED for single high-performance instance)
 MAX_REELS_PER_CREATOR = 10
-FRAME_SAMPLE_COUNT = 16
-MAX_DOWNLOAD_WORKERS = 10
-MAX_FRAMES_PER_REEL = 16
+FRAME_SAMPLE_COUNT = 16  # Keep original value for quality
+MAX_DOWNLOAD_WORKERS = 8  # Reduced from 10 to prevent overload
+MAX_FRAMES_PER_REEL = 16  # Keep original value for quality
 MAX_POSTS_FOR_MARKETING_ANALYSIS = 10
 
 # Gemini model
 GEMINI_MODEL = "models/gemini-2.0-flash-001"
 
-# Video caption detection settings
-TARGET_FPS = 3
+# Video caption detection settings (REVERTED OCR sampling to original)
+TARGET_FPS = 3  # Reverted from 1 to 3 (original value)
+SMART_SAMPLING = True  # Keep smart sampling logic
 BOTTOM_CROP_RATIO = 0.4
 MIN_TEXT_LEN = 3
 SIMILARITY_SAME_SEGMENT = 0.6

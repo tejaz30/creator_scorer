@@ -86,9 +86,9 @@ class VideoCaptionAnalyzer:
     
     def build_caption_timeline(self, video_path: str) -> Tuple[List[Tuple[float, str]], float]:
         """
-        For a video:
-          1. Sample frames from the bottom band.
-          2. OCR each sampled frame.
+        For a video with OPTIMIZED sampling:
+          1. Sample frames from the bottom band with smart sampling.
+          2. OCR each sampled frame with early exit optimization.
 
         Returns:
           timeline: list of (time_sec, text) (text may be "")
@@ -103,12 +103,33 @@ class VideoCaptionAnalyzer:
             return [], 0.0
 
         timeline: List[Tuple[float, str]] = []
-        for t_sec, frame in frames:
+        
+        # OPTIMIZATION: Smart sampling with early exit
+        caption_found = False
+        consecutive_empty = 0
+        max_consecutive_empty = 5  # Stop after 5 consecutive empty frames
+        
+        for i, (t_sec, frame) in enumerate(frames):
             if frame is None:
                 timeline.append((t_sec, ""))
-                continue
-            text = self.ocr_caption_text(frame)
-            timeline.append((t_sec, text))
+                consecutive_empty += 1
+            else:
+                text = self.ocr_caption_text(frame)
+                timeline.append((t_sec, text))
+                
+                if text.strip():
+                    caption_found = True
+                    consecutive_empty = 0
+                else:
+                    consecutive_empty += 1
+            
+            # OPTIMIZATION: Early exit if we found captions and then many empty frames
+            if caption_found and consecutive_empty >= max_consecutive_empty:
+                # Fill remaining timeline with empty entries for consistency
+                remaining_frames = frames[i+1:]
+                for t_sec_remaining, _ in remaining_frames:
+                    timeline.append((t_sec_remaining, ""))
+                break
 
         return timeline, duration
     

@@ -325,6 +325,19 @@ playground/
 docs/_build/
 site/
 
+#results
+*csv
+
+#Models
+*joblib
+*pkl
+#reports
+*txt
+
+COMPLETE_CREATOR_DATA/
+organized_creator_data/
+all_personality_predictions.csv
+reels/
 # ============================================================================
 # KEEP THESE FILES (FORCE INCLUDE)
 # ============================================================================

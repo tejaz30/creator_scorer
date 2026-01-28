@@ -22,11 +22,11 @@ from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
 
-from .config import (
+from config import (
     XGBOOST_PARAMS, CV_FOLDS, TEST_SIZE, RANDOM_STATE,
     MIN_COMMUNICATION_SCORE, MAX_COMMUNICATION_SCORE, MODELS_DIR, RESULTS_DIR
 )
-from .communication_preprocessor import CommunicationFeaturePreprocessor
+from communication_preprocessor import CommunicationPreprocessor
 
 class CommunicationScorer:
     """XGBoost-based communication scoring model."""
@@ -34,12 +34,12 @@ class CommunicationScorer:
     def __init__(self, params=None):
         self.params = params or XGBOOST_PARAMS.copy()
         self.model = None
-        self.preprocessor = CommunicationFeaturePreprocessor()
+        self.preprocessor = CommunicationPreprocessor()
         self.is_fitted = False
         self.feature_importance = None
         self.training_metrics = {}
         
-    def prepare_data(self, df, target_column='communication_score'):
+    def prepare_data(self, df, target_column='communication'):
         """Prepare data for training."""
         print("🔄 Preparing communication data...")
         
@@ -56,15 +56,21 @@ class CommunicationScorer:
         if target_min < MIN_COMMUNICATION_SCORE or target_max > MAX_COMMUNICATION_SCORE:
             print(f"   ⚠️  Target values outside expected range [{MIN_COMMUNICATION_SCORE}, {MAX_COMMUNICATION_SCORE}]: [{target_min}, {target_max}]")
         
-        # Preprocess features
-        X, y = self.preprocessor.fit_transform(df_clean, target_column)
+        # Preprocess features using CommunicationPreprocessor
+        df_processed = self.preprocessor.prepare_for_training(df_clean, target_column)
+        
+        # Extract features (exclude target and non-feature columns)
+        exclude_columns = [target_column, 'creator', 'aspirational', 'relatable', 'cool', 'credible', 'communication', 'story_telling']
+        feature_columns = [col for col in df_processed.columns if col not in exclude_columns]
+        X = df_processed[feature_columns]
+        y = df_processed[target_column]
         
         print(f"   Final feature matrix shape: {X.shape}")
         print(f"   Target statistics: mean={y.mean():.2f}, std={y.std():.2f}")
         
         return X, y, df_clean
     
-    def train(self, df, target_column='communication_score', test_size=None):
+    def train(self, df, target_column='communication', test_size=None):
         """Train the communication scoring model."""
         print("🚀 Training Communication Scoring Model...")
         
@@ -147,8 +153,13 @@ class CommunicationScorer:
         if not self.is_fitted:
             raise ValueError("Model must be trained before making predictions")
         
-        # Preprocess features (transform only, don't fit)
-        X = self.preprocessor.transform(df)
+        # Preprocess features using CommunicationPreprocessor
+        df_processed = self.preprocessor.prepare_for_prediction(df)
+        
+        # Extract features (exclude target and non-feature columns)
+        exclude_columns = ['communication', 'communication_score', 'creator', 'aspirational', 'relatable', 'cool', 'credible', 'story_telling']
+        feature_columns = [col for col in df_processed.columns if col not in exclude_columns]
+        X = df_processed[feature_columns]
         
         # Make predictions
         predictions = self.model.predict(X)
@@ -227,7 +238,7 @@ class CommunicationScorer:
         
         return dict(zip(self.feature_importance['feature'], self.feature_importance['importance']))
     
-    def evaluate_predictions(self, df, target_column='communication_score'):
+    def evaluate_predictions(self, df, target_column='communication'):
         """Evaluate model predictions against true values."""
         if target_column not in df.columns:
             raise ValueError(f"Target column '{target_column}' not found")

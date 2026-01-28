@@ -76,7 +76,7 @@ class AccessoryAnalyzer:
     
     def compute_accessories_for_reel(self, video_path: str) -> Dict[str, float]:
         """
-        Compute accessory metrics for a video reel.
+        Compute accessory metrics for a video reel with BATCH PROCESSING OPTIMIZATION.
         
         Returns:
             Dict with average counts per bucket (clothing, jewellery, gadgets, etc.)
@@ -114,15 +114,39 @@ class AccessoryAnalyzer:
                 "avg_travel_gear_per_reel": np.nan,
             }
         
-        # Accumulate counts across all frames
+        # OPTIMIZATION: Batch YOLO processing instead of frame-by-frame
         total_bucket_counts = defaultdict(int)
         
-        for frame in frames:
-            class_counts = self.detect_accessories_in_frame(frame)
-            bucket_counts = self.aggregate_to_buckets(class_counts)
+        try:
+            # Process all frames in a single batch call
+            results = yolo_model(frames, verbose=False)
             
-            for bucket, count in bucket_counts.items():
-                total_bucket_counts[bucket] += count
+            # Process results for each frame
+            for result in results:
+                class_counts = defaultdict(int)
+                
+                if result.boxes is not None:
+                    for box in result.boxes:
+                        class_id = int(box.cls[0])
+                        class_name = yolo_model.names.get(class_id, "unknown")
+                        
+                        if class_name in self.accessory_classes:
+                            class_counts[class_name] += 1
+                
+                # Aggregate to buckets
+                bucket_counts = self.aggregate_to_buckets(class_counts)
+                for bucket, count in bucket_counts.items():
+                    total_bucket_counts[bucket] += count
+                    
+        except Exception as e:
+            print(f"    ⚠️ Batch YOLO processing failed, falling back to individual frames: {e}")
+            # Fallback to individual frame processing
+            for frame in frames:
+                class_counts = self.detect_accessories_in_frame(frame)
+                bucket_counts = self.aggregate_to_buckets(class_counts)
+                
+                for bucket, count in bucket_counts.items():
+                    total_bucket_counts[bucket] += count
         
         # Calculate averages per frame
         num_frames = len(frames)
